@@ -1,0 +1,17 @@
+{
+  "name": "Invoice Pabrik",
+  "short_name": "Invoice",
+  "description": "Membuat invoice PDF pabrik kain langsung dari HP atau tablet.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1B2A4A",
+  "theme_color": "#131F38",
+  "lang": "id",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
