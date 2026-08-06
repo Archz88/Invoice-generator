@@ -188,12 +188,18 @@ input[type=url]{width:100%; font:inherit; color:var(--ink); background:#F7F4EE;
       <label for="cphone">Telepon</label>
       <input type="text" id="cphone" inputmode="tel" autocomplete="off">
     </div>
+    <div class="rec-act" style="margin-top:12px">
+      <button class="btn-mini" id="custSave" type="button">Simpan pelanggan</button>
+      <button class="btn-mini" id="custDel" type="button">Hapus dari daftar</button>
+    </div>
+    <div class="hint" id="custHint"></div>
   </section>
 
   <section class="card">
     <h2><span class="n">2</span> Barang</h2>
     <div id="items"></div>
     <button class="btn-add" id="addItem" type="button">+ Tambah baris</button>
+    <datalist id="produkList"></datalist>
   </section>
 
   <section class="card">
@@ -223,10 +229,6 @@ input[type=url]{width:100%; font:inherit; color:var(--ink); background:#F7F4EE;
         <input type="text" id="signerShort">
       </div>
     </div>
-    <label class="switch" style="margin-top:6px">
-      <input type="checkbox" id="showTotal">
-      <span>Tampilkan baris Total di bawah tabel</span>
-    </label>
   </section>
   <section class="card">
     <h2><span class="n">4</span> Kiriman ke Drive</h2>
@@ -246,6 +248,8 @@ input[type=url]{width:100%; font:inherit; color:var(--ink); background:#F7F4EE;
     </label>
     <button class="btn-add" id="gsTest" type="button" style="margin-top:8px">Uji koneksi</button>
     <div class="hint" id="gsStatus"></div>
+    <button class="btn-add" id="gsSync" type="button" style="margin-top:10px">Ambil daftar pelanggan &amp; harga</button>
+    <div class="hint" id="gsSyncStatus"></div>
   </section>
 
   <section class="card">
@@ -448,7 +452,7 @@ const ASSETS = {
   function buildInvoice(data) {
     var invDate = data.invoice_date || todayId();
     var items = data.items || [];
-    var showTotal = !!data.show_total_row;
+    var showTotal = data.show_total_row !== false;   // bawaan: selalu ada
     var nRows = items.length + 1 + (showTotal ? 1 : 0);
     var th = ROW_H * nRows;
     var tableBottom = TABLE_TOP - th;
@@ -527,30 +531,42 @@ const ASSETS = {
       cellMoney(5, rowTop, grand);
     }
 
-    // --- Garis tabel (koordinat lokal tabel, seperti ReportLab) ---
+    // --- Garis tabel ---
+    // Digambar hanya pada ruas yang memang perlu bergaris. Area kosong di kiri
+    // baris Total tidak digambari sama sekali (bukan digambar lalu ditimpa putih),
+    // supaya tidak meninggalkan bekas garis abu-abu di pembaca PDF mana pun.
     c.push("q 1 0 0 1 " + LM.toFixed(5) + " " + tableBottom.toFixed(4) + " cm");
     c.push("1 J 1 j 0 0 0 RG .75 w");
     function line(x1, y1, x2, y2) {
       c.push("n " + x1 + " " + y1 + " m " + x2 + " " + y2 + " l S");
     }
-    line(0, th, TABLE_W, th);
-    line(0, 0, TABLE_W, 0);
-    line(0, 0, 0, th);
-    line(TABLE_W, 0, TABLE_W, th);
-    for (var k = 1; k < nRows; k++) line(0, k * ROW_H, TABLE_W, k * ROW_H);
+
+    var yItems = showTotal ? ROW_H : 0;   // batas bawah area item
+
+    // garis mendatar penuh: dari bawah area item sampai atas tabel
+    for (var y1 = yItems; y1 <= th + 0.01; y1 += ROW_H) line(0, y1, TABLE_W, y1);
+
+    // tepi kiri & kanan area item
+    line(0, yItems, 0, th);
+    line(TABLE_W, yItems, TABLE_W, th);
+
+    // pemisah antar kolom di area item
     var xacc = 0;
     for (var v = 0; v < COL.length - 1; v++) {
       xacc += COL[v];
-      // kolom 1|2 dan 2|3 berhenti di atas baris Total (efek SPAN)
-      var yBot = (showTotal && v < 2) ? ROW_H : 0;
-      line(xacc, yBot, xacc, th);
+      line(xacc, yItems, xacc, th);
     }
+
+    // baris Total: hanya berkotak di kolom Unit, Price, dan Total
     if (showTotal) {
-      var spanRight = COL[0] + COL[1] + COL[2];
-      c.push("1 1 1 RG");
-      line(0, ROW_H, spanRight, ROW_H);
-      line(0, 0, spanRight, 0);
-      line(0, 0, 0, ROW_H);
+      var xD = COL[0] + COL[1] + COL[2];
+      var xE = xD + COL[3];
+      var xF = xE + COL[4];
+      line(xD, 0, TABLE_W, 0);
+      line(xD, 0, xD, ROW_H);
+      line(xE, 0, xE, ROW_H);
+      line(xF, 0, xF, ROW_H);
+      line(TABLE_W, 0, TABLE_W, ROW_H);
     }
     c.push("Q");
 
@@ -653,6 +669,48 @@ const ASSETS = {
 
   var $ = function(id){ return document.getElementById(id); };
 
+  // ---------- ingatan harga & daftar produk ----------
+  var products = [];
+  var priceMemory = {};        // "Pelanggan||Produk" -> harga terakhir
+
+  try{ var rp = store("products"); if(rp) products = JSON.parse(rp) || []; }catch(e){}
+  try{ var rm = store("prices");   if(rm) priceMemory = JSON.parse(rm) || {}; }catch(e){}
+
+  function priceKey(cust, prod){
+    return String(cust||"").trim() + "||" + String(prod||"").trim();
+  }
+  function lastPrice(prod){
+    var v = priceMemory[priceKey($("cname").value, prod)];
+    return (typeof v === "number" && v > 0) ? v : null;
+  }
+  function renderProducts(){
+    var dl = $("produkList"); if(!dl) return;
+    dl.innerHTML = "";
+    products.forEach(function(p){
+      var o = document.createElement("option"); o.value = p; dl.appendChild(o);
+    });
+  }
+  function rememberProduct(p){
+    p = String(p||"").trim();
+    if(p && products.indexOf(p) < 0){
+      products.push(p); products.sort();
+      try{ store("products", JSON.stringify(products)); }catch(e){}
+      renderProducts();
+    }
+  }
+  function rememberPrices(cust, list){
+    var changed = false;
+    list.forEach(function(it){
+      var p = String(it.product||"").trim();
+      var harga = Number(it.price) || 0;
+      if(p && harga > 0 && !it.retur){
+        priceMemory[priceKey(cust, p)] = harga; changed = true;
+      }
+      rememberProduct(p);
+    });
+    if(changed){ try{ store("prices", JSON.stringify(priceMemory)); }catch(e){} }
+  }
+
   // ---------- data pelanggan ----------
   var DEFAULT_CUSTOMERS = [
     {name:"Ismail", addr:"Jl. Pener, Cibeureum, RT 4 RW 27", phone:"085294384990"}
@@ -675,12 +733,42 @@ const ASSETS = {
   $("cust").addEventListener("change", function(){
     if(this.value === "new"){ $("cname").value=""; $("caddr").value=""; $("cphone").value=""; $("cname").focus(); }
     else applyCustomer(parseInt(this.value,10));
+    items.forEach(function(it){ it.priceManual = false; });   // ikut harga pelanggan baru
+    refreshAllPrices();
+    saveDraft();
+  });
+
+  function saveCustomers(){ try{ store("cust_list", JSON.stringify(customers)); }catch(e){} }
+
+  $("custSave").addEventListener("click", function(){
+    var nama = $("cname").value.trim();
+    if(!nama){ $("custHint").innerHTML = "<b>Nama pelanggan masih kosong.</b>"; return; }
+    var rec = {name:nama, addr:$("caddr").value.trim(), phone:$("cphone").value.trim()};
+    var i = customers.findIndex(function(c){ return c.name === nama; });
+    if(i >= 0) customers[i] = rec; else customers.push(rec);
+    customers.sort(function(a,b){ return a.name.localeCompare(b.name); });
+    saveCustomers();
+    renderCustomers(String(customers.findIndex(function(c){ return c.name === nama; })));
+    $("custHint").innerHTML = "<b>" + nama + "</b> tersimpan.";
+  });
+
+  $("custDel").addEventListener("click", function(){
+    var nama = $("cname").value.trim();
+    var i = customers.findIndex(function(c){ return c.name === nama; });
+    if(i < 0){ $("custHint").innerHTML = "<b>" + (nama || "Pelanggan itu") + "</b> tidak ada di daftar."; return; }
+    if(!confirm("Hapus " + nama + " dari daftar pelanggan?")) return;
+    customers.splice(i, 1);
+    saveCustomers(); renderCustomers("new");
+    $("cname").value = ""; $("caddr").value = ""; $("cphone").value = "";
+    $("custHint").innerHTML = "<b>" + nama + "</b> dihapus dari daftar.";
     saveDraft();
   });
 
   // ---------- baris barang ----------
   var items = [];
-  function newItem(){ return {product:"", date:todayIso(), unit:"", price:"", retur:false, total:null}; }
+  function newItem(){
+    return {product:"", date:todayIso(), unit:"", price:"", retur:false, total:null, priceManual:false};
+  }
 
   function itemNode(it, idx){
     var el = document.createElement("div");
@@ -688,7 +776,8 @@ const ASSETS = {
     el.innerHTML =
       '<div class="item-head"><span class="item-no">Baris ' + (idx+1) + '</span>' +
       '<button class="btn-del" type="button" data-act="del">Hapus</button></div>' +
-      '<div class="field"><label>Produk</label><input type="text" data-f="product" autocomplete="off"></div>' +
+      '<div class="field"><label>Produk</label>' +
+      '<input type="text" data-f="product" list="produkList" autocomplete="off"></div>' +
       '<div class="field"><label>Tanggal kirim</label><input type="date" data-f="date">' +
       '<div class="hint" data-h="date"></div></div>' +
       '<div class="grid2">' +
@@ -696,6 +785,7 @@ const ASSETS = {
       '<div class="hint" data-h="unit"></div></div>' +
       '<div class="field"><label>Harga / yard</label><input type="text" inputmode="decimal" data-f="price">' +
       '<div class="hint" data-h="price"></div></div></div>' +
+      '<div class="hint" data-h="lastprice" style="margin:-6px 0 6px"></div>' +
       '<label class="switch"><input type="checkbox" data-f="retur"><span>Baris retur (nilai minus)</span></label>' +
       '<div class="rowtotal"><span>Total baris</span><span class="tot">' +
       '<b data-h="total">Rp 0,00</b>' +
@@ -713,6 +803,8 @@ const ASSETS = {
     el.addEventListener("input", function(ev){
       var f = ev.target.getAttribute("data-f"); if(!f) return;
       it[f] = ev.target.type === "checkbox" ? ev.target.checked : ev.target.value;
+      if(f === "price") it.priceManual = true;      // harga diketik sendiri
+      if(f === "product") applyLastPrice(el, it);   // ikut harga terakhir
       el.classList.toggle("retur", !!it.retur);
       refreshItem(el, it); recalc(); saveDraft();
     });
@@ -747,6 +839,25 @@ const ASSETS = {
     var t = isManual(it) ? parseID(it.total) : computed(it);
     return it.retur ? -Math.abs(t) : t;
   }
+  // Isi harga dari penjualan terakhir, kecuali harganya sudah diketik sendiri.
+  function applyLastPrice(el, it){
+    if(it.priceManual && parseID(it.price)) return;
+    var h = lastPrice(it.product);
+    if(h){
+      it.price = money(h).replace(",00", "");
+      el.querySelector('[data-f=price]').value = it.price;
+      it.priceManual = false;
+    }
+  }
+  function refreshAllPrices(){
+    var nodes = $("items").children;
+    for(var i = 0; i < items.length && i < nodes.length; i++){
+      applyLastPrice(nodes[i], items[i]);
+      refreshItem(nodes[i], items[i]);
+    }
+    recalc(); saveDraft();
+  }
+
   function refreshItem(el, it){
     el.querySelector('[data-h=date]').innerHTML = it.date ? "<b>" + isoToId(it.date) + "</b>" : "";
     var u = parseID(it.unit), p = parseID(it.price);
@@ -757,6 +868,16 @@ const ASSETS = {
     bEl.hidden = man; iEl.hidden = !man;
     el.querySelector('[data-act=edit]').textContent = man ? "otomatis" : "ubah";
     bEl.textContent = "Rp " + money(lineTotal(it));
+
+    var lp = lastPrice(it.product);
+    var lpEl = el.querySelector('[data-h=lastprice]');
+    if(lp && Math.abs(lp - parseID(it.price)) > 0.001){
+      lpEl.innerHTML = "Harga terakhir untuk pelanggan ini: <b>Rp " + money(lp) + "</b>";
+    } else if(lp){
+      lpEl.innerHTML = "Memakai harga terakhir untuk pelanggan ini.";
+    } else {
+      lpEl.textContent = "";
+    }
   }
   function renderItems(){
     var box = $("items"); box.innerHTML = "";
@@ -785,7 +906,6 @@ const ASSETS = {
   ["cname","caddr","cphone","city","bank","signer","signerShort"].forEach(function(id){
     $(id).addEventListener("input", saveDraft);
   });
-  $("showTotal").addEventListener("change", saveDraft);
 
   // ---------- simpan / muat draf ----------
   function currentState(){
@@ -793,7 +913,7 @@ const ASSETS = {
       cust:{name:$("cname").value, addr:$("caddr").value, phone:$("cphone").value},
       city:$("city").value, bank:$("bank").value,
       signer:$("signer").value, signerShort:$("signerShort").value,
-      invdate:$("invdate").value, showTotal:$("showTotal").checked, items:items
+      invdate:$("invdate").value, items:items
     };
   }
   function saveDraft(){ try{ store("draft", JSON.stringify(currentState())); }catch(e){} }
@@ -808,7 +928,6 @@ const ASSETS = {
     $("signer").value = (d && d.signer) || "Michael Stefanus";
     $("signerShort").value = (d && d.signerShort) || "Michael";
     $("invdate").value = todayIso();
-    $("showTotal").checked = d ? !!d.showTotal : false;
     items = (d && d.items && d.items.length) ? d.items : [newItem()];
     renderCustomers();
     var idx = customers.findIndex(function(x){ return x.name === $("cname").value; });
@@ -816,7 +935,9 @@ const ASSETS = {
     $("topDate").innerHTML = isoToId(todayIso());
     onDate(); renderItems(); recalc();
     loadSettings();
+    renderProducts();
     renderHistory().then(flush);
+    if(navigator.onLine) syncCatalog(false);
   }
 
   // ================= antrean lokal (IndexedDB) =============================
@@ -972,6 +1093,53 @@ const ASSETS = {
     });
   });
 
+  function syncCatalog(manual){
+    if(!S.url) {
+      if(manual) $("gsSyncStatus").innerHTML = "<b>Isi dulu alamat Apps Script di atas.</b>";
+      return Promise.resolve();
+    }
+    if(manual) $("gsSyncStatus").textContent = "Mengambil...";
+    return jsonp({action:"catalog", token:S.token}, 25000).then(function(out){
+      if(!out || !out.ok) throw new Error((out && out.error) || "ditolak server");
+
+      (out.customers || []).forEach(function(c){
+        if(!c || !c.name) return;
+        var i = customers.findIndex(function(x){ return x.name === c.name; });
+        var rec = {name:c.name, addr:c.addr || "", phone:c.phone || ""};
+        if(i >= 0){
+          // isian dari Sheets hanya menimpa yang memang terisi
+          customers[i] = {name:c.name,
+                          addr: rec.addr || customers[i].addr,
+                          phone: rec.phone || customers[i].phone};
+        } else customers.push(rec);
+      });
+      customers.sort(function(a,b){ return a.name.localeCompare(b.name); });
+      saveCustomers();
+
+      (out.products || []).forEach(function(p){
+        p = String(p||"").trim();
+        if(p && products.indexOf(p) < 0) products.push(p);
+      });
+      products.sort();
+      try{ store("products", JSON.stringify(products)); }catch(e){}
+
+      Object.keys(out.prices || {}).forEach(function(k){ priceMemory[k] = out.prices[k]; });
+      try{ store("prices", JSON.stringify(priceMemory)); }catch(e){}
+
+      renderProducts();
+      var sel = customers.findIndex(function(c){ return c.name === $("cname").value; });
+      renderCustomers(sel >= 0 ? String(sel) : "new");
+      refreshAllPrices();
+
+      $("gsSyncStatus").innerHTML = "<b>Terbarui.</b> " + customers.length + " pelanggan, " +
+        products.length + " produk, " + Object.keys(priceMemory).length + " catatan harga.";
+      return out;
+    }).catch(function(e){
+      if(manual) $("gsSyncStatus").innerHTML = "<b>Gagal:</b> " + e.message;
+    });
+  }
+  $("gsSync").addEventListener("click", function(){ saveSettings(); syncCatalog(true); });
+
   // ================= pengiriman & riwayat ==================================
   function blobToB64(blob){
     return new Promise(function(res, rej){
@@ -1093,7 +1261,7 @@ const ASSETS = {
         customer_phone: $("cphone").value, city: $("city").value,
         invoice_date: isoToId(iso) || C.todayId(), bank: $("bank").value,
         signer_name: $("signer").value, signer_short: $("signerShort").value,
-        show_total_row: $("showTotal").checked, items: list
+        show_total_row: true, items: list
       },
       rows: rows, iso: iso
     };
@@ -1134,6 +1302,7 @@ const ASSETS = {
       $("outName").textContent = name;
       $("sheet").hidden = false;
       rememberCustomer(c.pdf);
+      rememberPrices(c.pdf.customer_name, c.rows);
     }catch(e){
       $("sheet").hidden = false;
       $("outName").textContent = "-";
