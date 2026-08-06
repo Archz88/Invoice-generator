@@ -81,6 +81,31 @@ input:focus-visible,select:focus-visible,button:focus-visible{
 .item.retur .rowtotal b{color:var(--retur)}
 .tot{display:flex; align-items:center; gap:8px}
 .rowtotal input{width:158px; text-align:right; min-height:38px; padding:6px 9px; font-size:15px}
+
+/* --- kotak pilih produk (buatan sendiri, tidak memakai datalist bawaan) --- */
+.combo{position:relative}
+.combo input{padding-right:46px}
+.combo-btn{
+  position:absolute; right:1px; top:1px; bottom:1px; width:42px;
+  background:transparent; border:none; border-left:1px solid #C9C0AE;
+  color:var(--ink-soft); font-size:13px; line-height:1; border-radius:0 9px 9px 0;
+}
+.combo-btn:active{background:#E8E1D3}
+.combo-list{
+  position:absolute; left:0; right:0; top:calc(100% + 4px); z-index:20;
+  background:#F7F4EE; border:1px solid #B6AB97; border-radius:10px;
+  max-height:246px; overflow-y:auto; box-shadow:0 8px 22px rgba(20,26,40,.22);
+}
+.combo-list[hidden]{display:none}
+.combo-opt{
+  display:block; width:100%; text-align:left; background:transparent; border:none;
+  border-bottom:1px solid #E0D8C8; padding:12px 13px; min-height:46px;
+  font:inherit; color:var(--ink); border-radius:0;
+}
+.combo-opt:last-child{border-bottom:none}
+.combo-opt:active{background:#E8E1D3}
+.combo-opt .price{display:block; font-size:12px; color:var(--ink-soft); margin-top:2px}
+.combo-empty{padding:12px 13px; font-size:13px; color:var(--ink-soft)}
 .btn-mini{
   background:transparent; border:1px solid #C4B9A6; color:var(--ink-soft);
   font-size:12px; min-height:34px; padding:0 10px; border-radius:8px;
@@ -199,7 +224,6 @@ input[type=url]{width:100%; font:inherit; color:var(--ink); background:#F7F4EE;
     <h2><span class="n">2</span> Barang</h2>
     <div id="items"></div>
     <button class="btn-add" id="addItem" type="button">+ Tambah baris</button>
-    <datalist id="produkList"></datalist>
   </section>
 
   <section class="card">
@@ -683,13 +707,7 @@ const ASSETS = {
     var v = priceMemory[priceKey($("cname").value, prod)];
     return (typeof v === "number" && v > 0) ? v : null;
   }
-  function renderProducts(){
-    var dl = $("produkList"); if(!dl) return;
-    dl.innerHTML = "";
-    products.forEach(function(p){
-      var o = document.createElement("option"); o.value = p; dl.appendChild(o);
-    });
-  }
+  function renderProducts(){ /* daftar digambar saat kotaknya dibuka */ }
   function rememberProduct(p){
     p = String(p||"").trim();
     if(p && products.indexOf(p) < 0){
@@ -777,7 +795,11 @@ const ASSETS = {
       '<div class="item-head"><span class="item-no">Baris ' + (idx+1) + '</span>' +
       '<button class="btn-del" type="button" data-act="del">Hapus</button></div>' +
       '<div class="field"><label>Produk</label>' +
-      '<input type="text" data-f="product" list="produkList" autocomplete="off"></div>' +
+      '<div class="combo">' +
+      '<input type="text" data-f="product" autocomplete="off" placeholder="Ketik atau pilih">' +
+      '<button class="combo-btn" type="button" data-act="pick" aria-label="Pilih produk">&#9660;</button>' +
+      '<div class="combo-list" data-h="list" hidden></div>' +
+      '</div></div>' +
       '<div class="field"><label>Tanggal kirim</label><input type="date" data-f="date">' +
       '<div class="hint" data-h="date"></div></div>' +
       '<div class="grid2">' +
@@ -814,6 +836,60 @@ const ASSETS = {
         it.retur = ev.target.checked; refreshItem(el, it); recalc(); saveDraft();
       }
     });
+    // ---- kotak pilih produk ----
+    var listEl = el.querySelector('[data-h=list]');
+    var prodEl = el.querySelector('[data-f=product]');
+
+    function closeList(){ listEl.hidden = true; }
+    function openList(filterText){
+      var q = String(filterText || "").trim().toLowerCase();
+      var pilihan = products.filter(function(p){
+        return !q || p.toLowerCase().indexOf(q) >= 0;
+      });
+      listEl.innerHTML = "";
+      if(!pilihan.length){
+        var kosong = document.createElement("div");
+        kosong.className = "combo-empty";
+        kosong.textContent = products.length
+          ? "Tidak ada produk yang cocok. Ketik saja nama produknya."
+          : "Daftar produk masih kosong. Ketik nama produknya, nanti tersimpan sendiri.";
+        listEl.appendChild(kosong);
+      } else {
+        pilihan.forEach(function(p){
+          var b = document.createElement("button");
+          b.type = "button"; b.className = "combo-opt";
+          var h = lastPrice(p);
+          b.innerHTML = "<span></span>" +
+            (h ? '<span class="price">Rp ' + money(h) + '</span>' : "");
+          b.firstChild.textContent = p;
+          b.addEventListener("click", function(){
+            it.product = p;
+            prodEl.value = p;
+            it.priceManual = false;
+            applyLastPrice(el, it);
+            closeList();
+            refreshItem(el, it); recalc(); saveDraft();
+          });
+          listEl.appendChild(b);
+        });
+      }
+      listEl.hidden = false;
+    }
+
+    el.querySelector('[data-act=pick]').addEventListener("click", function(ev){
+      ev.stopPropagation();
+      if(listEl.hidden){
+        closeAllLists();
+        openList("");          // panah ditekan -> tampilkan semua produk
+      } else closeList();
+    });
+    prodEl.addEventListener("focus", function(){ closeAllLists(); });
+    prodEl.addEventListener("input", function(){
+      if(products.length) { closeAllLists(); openList(prodEl.value); }
+    });
+    prodEl.addEventListener("blur", function(){ setTimeout(closeList, 180); });
+    el._closeList = closeList;
+
     el.querySelector('[data-act=edit]').addEventListener("click", function(){
       if(it.total === null || it.total === undefined || it.total === ""){
         it.total = money(Math.abs(computed(it)));            // mulai dari hasil hitungan
@@ -879,6 +955,16 @@ const ASSETS = {
       lpEl.textContent = "";
     }
   }
+  function closeAllLists(){
+    var nodes = $("items").children;
+    for(var i = 0; i < nodes.length; i++){
+      if(nodes[i]._closeList) nodes[i]._closeList();
+    }
+  }
+  document.addEventListener("click", function(ev){
+    if(!ev.target.closest || !ev.target.closest(".combo")) closeAllLists();
+  });
+
   function renderItems(){
     var box = $("items"); box.innerHTML = "";
     items.forEach(function(it,i){ box.appendChild(itemNode(it,i)); });
