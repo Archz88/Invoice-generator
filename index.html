@@ -482,18 +482,22 @@ const ASSETS = {
     var tableBottom = TABLE_TOP - th;
 
     var c = [];   // operator content stream
-    function txt(x, y, s, bold, size) {
+    var curFill = null;
+    function fill(red) {
+      var want = red ? "1 0 0 rg" : "0 0 0 rg";
+      if (curFill !== want) { c.push(want); curFill = want; }
+    }
+    function txt(x, y, s, bold, size, red) {
+      fill(red);
       c.push("BT 1 0 0 1 " + x.toFixed(4) + " " + y.toFixed(4) + " Tm /" +
         (bold ? "F2" : "F1") + " " + size + " Tf " + pdfStr(s) + " Tj ET");
     }
-    function txtCenter(cx, y, s, bold, size) {
-      txt(cx - strWidth(s, bold, size) / 2, y, s, bold, size);
+    function txtCenter(cx, y, s, bold, size, red) {
+      txt(cx - strWidth(s, bold, size) / 2, y, s, bold, size, red);
     }
-    function txtRight(rx, y, s, bold, size) {
-      txt(rx - strWidth(s, bold, size), y, s, bold, size);
+    function txtRight(rx, y, s, bold, size, red) {
+      txt(rx - strWidth(s, bold, size), y, s, bold, size, red);
     }
-
-    c.push("0 0 0 rg");
 
     // --- Judul ---
     txtCenter(PAGE_W / 2, PAGE_H - 52, "INVOICE", true, 28);
@@ -513,18 +517,19 @@ const ASSETS = {
     }
 
     // --- Isi tabel ---
-    function cellCenter(colIdx, rowTop, s, bold) {
+    function cellCenter(colIdx, rowTop, s, bold, red) {
       var avail = COL[colIdx] - 2 * PAD;
       txt(colLeft(colIdx) + PAD + (avail - strWidth(s, bold, 14)) / 2,
-        rowTop - BASE_OFF, s, bold, 14);
+        rowTop - BASE_OFF, s, bold, 14, red);
     }
-    function cellLeft(colIdx, rowTop, s, bold) {
-      txt(colLeft(colIdx) + PAD, rowTop - BASE_OFF, s, bold, 14);
+    function cellLeft(colIdx, rowTop, s, bold, red) {
+      txt(colLeft(colIdx) + PAD, rowTop - BASE_OFF, s, bold, 14, red);
     }
-    function cellMoney(colIdx, rowTop, amount) {
+    function cellMoney(colIdx, rowTop, amount, red) {
       var base = rowTop - BASE_OFF;
-      txt(colLeft(colIdx) + PAD, base, "Rp", false, 14);
-      txtRight(colLeft(colIdx) + COL[colIdx] - PAD - AMT_RPAD, base, fmtAmount(amount), false, 14);
+      txt(colLeft(colIdx) + PAD, base, "Rp", false, 14, red);
+      txtRight(colLeft(colIdx) + COL[colIdx] - PAD - AMT_RPAD, base,
+        fmtAmount(amount), false, 14, red);
     }
 
     var head = ["No", "Product", "Date", "Unit (Yard)", "Price", "Total"];
@@ -536,12 +541,17 @@ const ASSETS = {
       var it = items[r];
       var total = (it.total === undefined || it.total === null)
         ? it.unit * it.price : it.total;
-      cellCenter(0, rowTop, String(r + 1), false);
-      cellLeft(1, rowTop, it.product || "", false);
-      cellCenter(2, rowTop, it.date || "", false);
-      cellCenter(3, rowTop, fmtUnit(it.unit), false);
-      cellMoney(4, rowTop, it.price);
-      cellMoney(5, rowTop, total);
+      // Baris retur ditulis merah. Ikut penanda is_return kalau ada; kalau tidak,
+      // ditebak dari nama produk yang diawali "Return" atau dari total negatif.
+      var red = (it.is_return !== undefined && it.is_return !== null)
+        ? !!it.is_return
+        : (String(it.product || "").trim().toLowerCase().indexOf("return") === 0 || total < 0);
+      cellCenter(0, rowTop, String(r + 1), false, red);
+      cellLeft(1, rowTop, it.product || "", false, red);
+      cellCenter(2, rowTop, it.date || "", false, red);
+      cellCenter(3, rowTop, fmtUnit(it.unit), false, red);
+      cellMoney(4, rowTop, it.price, red);
+      cellMoney(5, rowTop, total, red);
     }
 
     if (showTotal) {
@@ -551,8 +561,8 @@ const ASSETS = {
         var t = items[g].total;
         grand += (t === undefined || t === null) ? items[g].unit * items[g].price : t;
       }
-      cellLeft(3, rowTop, "Total", true);
-      cellMoney(5, rowTop, grand);
+      cellLeft(3, rowTop, "Total", true, false);
+      cellMoney(5, rowTop, grand, false);
     }
 
     // --- Garis tabel ---
@@ -561,6 +571,7 @@ const ASSETS = {
     // supaya tidak meninggalkan bekas garis abu-abu di pembaca PDF mana pun.
     c.push("q 1 0 0 1 " + LM.toFixed(5) + " " + tableBottom.toFixed(4) + " cm");
     c.push("1 J 1 j 0 0 0 RG .75 w");
+    curFill = null;   // warna isi di-reset setelah blok garis
     function line(x1, y1, x2, y2) {
       c.push("n " + x1 + " " + y1 + " m " + x2 + " " + y2 + " l S");
     }
@@ -1337,7 +1348,8 @@ const ASSETS = {
       if(!it.product && !parseID(it.unit)) return;
       var t = lineTotal(it);
       list.push({ product: it.product, date: isoToId(it.date),
-        unit: parseID(it.unit), price: parseID(it.price), total: t });
+        unit: parseID(it.unit), price: parseID(it.price), total: t,
+        is_return: !!it.retur });
       rows.push({ product: it.product, date_iso: it.date, unit: parseID(it.unit),
         price: parseID(it.price), total: t, retur: !!it.retur });
     });
@@ -1381,7 +1393,11 @@ const ASSETS = {
         id: id, filename: name, pdf: blob, status: "pending",
         createdAt: Date.now(), sentAt: 0, fileUrl: "", error: "", duplicate: false,
         payload: {
-          id: id, filename: name, customer_name: c.pdf.customer_name,
+          id: id, filename: name,
+          customer_name: c.pdf.customer_name,
+          customer_address: c.pdf.customer_address,
+          customer_phone: c.pdf.customer_phone,
+          city: c.pdf.city,
           invoice_date: c.pdf.invoice_date, invoice_date_iso: c.iso, rows: c.rows
         }
       };
