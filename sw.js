@@ -1,6 +1,6 @@
 /* Service worker: aplikasi tetap bisa dibuka tanpa internet,
    tapi versi terbaru selalu diambil dulu kalau ada sinyal. */
-const CACHE = "invoice-pabrik-v6";
+const CACHE = "invoice-pabrik-v7";
 const FILES = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {
